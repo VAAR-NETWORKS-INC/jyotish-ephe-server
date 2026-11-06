@@ -29,8 +29,9 @@ pre{white-space:pre-wrap;word-break:break-all;font-size:12px;color:var(--mute);m
 <script>
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
-$('key').value = sessionStorage.getItem('jk') || '';
-function askKey(msg) { sessionStorage.removeItem('jk'); $('key').value = ''; $('out').innerHTML = ''; $('err').textContent = msg || 'Enter the admin key.'; $('key').focus(); }
+try { if (!localStorage.getItem('jk') && sessionStorage.getItem('jk')) localStorage.setItem('jk', sessionStorage.getItem('jk')); } catch (e) {}
+$('key').value = localStorage.getItem('jk') || '';
+function askKey(msg) { try { localStorage.removeItem('jk'); } catch (e) {} $('key').value = ''; $('out').innerHTML = ''; $('err').textContent = msg || 'Enter the admin key.'; $('key').focus(); }
 async function api(path) {
   const key = $('key').value.trim();
   if (!key) { const e = new Error('Enter the admin key.'); e.needKey = true; throw e; }
@@ -45,7 +46,7 @@ async function load() {
   $('err').textContent = '';
   const key = $('key').value.trim();
   if (!key) { askKey('Enter the admin key.'); return; }
-  sessionStorage.setItem('jk', key);
+  try { localStorage.setItem('jk', key); } catch (e) {}
   try {
     const s = await api('/admin/stats?days=' + $('days').value), T = s.totals;
     $('gen').textContent = `Updated ${s.generated} · last ${s.days} days`;

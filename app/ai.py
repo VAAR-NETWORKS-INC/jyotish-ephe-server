@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 router = APIRouter()
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 OPENAI_URL = "https://api.openai.com/v1/chat/completions"
+OPENAI_RESPONSES = "https://api.openai.com/v1/responses"
 _hits: dict[str, list[float]] = {}
 _settings_lock = threading.Lock()
 _MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$")
@@ -437,26 +438,88 @@ def _openai_messages(messages: list[dict]) -> list[dict]:
     return out
 
 
+def _responses_input(messages: list[dict]) -> list[dict]:
+    """Chat history in Responses API shape, including replayed reasoning items."""
+    items = []
+    for m in messages:
+        role = m.get("role")
+        content = m.get("content")
+        if isinstance(content, str):
+            if content:
+                items.append({"role": "assistant" if role == "assistant" else "user", "content": content})
+            continue
+        blocks = content if isinstance(content, list) else []
+        if role == "assistant":
+            for b in blocks:
+                if not isinstance(b, dict):
+                    continue
+                if b.get("type") == "text" and b.get("text"):
+                    items.append({"role": "assistant", "content": b["text"]})
+                elif b.get("type") == "reasoning":
+                    item = {"type": "reasoning"}
+                    for key in ("id", "encrypted_content", "summary"):
+                        if b.get(key) not in (None, "", []):
+                            item[key] = b[key]
+                    items.append(item)
+                elif b.get("type") == "tool_use":
+                    items.append({
+                        "type": "function_call",
+                        "call_id": b.get("id") or "call",
+                        "name": b.get("name") or "",
+                        "arguments": json.dumps(b.get("input") or {}),
+                    })
+            continue
+        pending = []
+        for b in blocks:
+            if isinstance(b, dict) and b.get("type") == "tool_result":
+                if pending:
+                    items.append({"role": "user", "content": "\n".join(pending)})
+                    pending = []
+                piece = b.get("content")
+                items.append({
+                    "type": "function_call_output",
+                    "call_id": b.get("tool_use_id") or "",
+                    "output": piece if isinstance(piece, str) else json.dumps(piece),
+                })
+            else:
+                piece = _block_text(b)
+                if piece:
+                    pending.append(piece)
+        if pending:
+            items.append({"role": "user", "content": "\n".join(pending)})
+    return items
+
+
+def _openai_tools(body: AIReq, responses: bool) -> list[dict]:
+    tools = []
+    for t in body.tools[:12]:
+        schema = t.input_schema or {"type": "object", "properties": {}}
+        if responses:
+            tools.append({"type": "function", "name": t.name[:64], "description": t.description[:4000], "parameters": schema})
+        else:
+            tools.append({"type": "function", "function": {"name": t.name[:64], "description": t.description[:4000], "parameters": schema}})
+    return tools
+
+
 def _openai_payload(model: str, body: AIReq) -> dict:
     # Reasoning tokens count against this limit, so leave room for the answer.
-    payload: dict = {
-        "model": model,
-        "max_completion_tokens": 8000 if body.tier == "quick" else 16000,
-        "messages": _openai_messages([m.model_dump() for m in body.messages]),
-    }
+    limit = 8000 if body.tier == "quick" else 16000
+    dumped = [m.model_dump() for m in body.messages]
+    # gpt-5.4 and later reject function tools on chat completions unless
+    # reasoning_effort is none. The Responses API allows tools and reasoning.
     if body.tools:
-        payload["tools"] = [
-            {
-                "type": "function",
-                "function": {
-                    "name": t.name[:64],
-                    "description": t.description[:4000],
-                    "parameters": t.input_schema or {"type": "object", "properties": {}},
-                },
-            }
-            for t in body.tools[:12]
-        ]
-    return payload
+        return {
+            "_endpoint": "responses",
+            "model": model,
+            "max_output_tokens": limit,
+            "input": _responses_input(dumped),
+            "tools": _openai_tools(body, True),
+        }
+    return {
+        "model": model,
+        "max_completion_tokens": limit,
+        "messages": _openai_messages(dumped),
+    }
 
 
 def _tool_uses_from_calls(calls: list[dict]) -> tuple[list[dict], list[dict]]:
@@ -530,6 +593,83 @@ class _OpenFold:
             content = [{"type": "text", "text": self.text}] + content
         reason = {"stop": "end_turn", "tool_calls": "tool_use", "length": "max_tokens"}.get(self.finish, self.finish)
         return {"text": self.text, "stop_reason": reason, "content": content, "tool_uses": tools}
+
+
+class _RespFold:
+    """Responses API events into the same text and tool shape the app already expects."""
+
+    def __init__(self) -> None:
+        self.text = ""
+        self.items: dict[int, dict] = {}
+        self.output: list[dict] = []
+        self.incomplete = False
+        self.error: str | None = None
+
+    def feed(self, data: dict) -> str:
+        kind = data.get("type") or ""
+        if kind == "response.output_text.delta":
+            piece = data.get("delta") or ""
+            if not isinstance(piece, str):
+                piece = ""
+            self.text += piece
+            return piece
+        if kind in ("response.output_item.added", "response.output_item.done"):
+            item = data.get("item")
+            if isinstance(item, dict):
+                idx = data.get("output_index")
+                if not isinstance(idx, int):
+                    idx = len(self.items)
+                if kind == "response.output_item.done" or idx not in self.items:
+                    self.items[idx] = item
+            return ""
+        if kind in ("response.completed", "response.incomplete", "response.failed"):
+            resp = data.get("response") if isinstance(data.get("response"), dict) else {}
+            output = resp.get("output")
+            if isinstance(output, list):
+                self.output = [item for item in output if isinstance(item, dict)]
+            if kind == "response.failed":
+                err = resp.get("error") if isinstance(resp.get("error"), dict) else {}
+                self.error = err.get("message") or "The AI provider rejected the request"
+            elif kind == "response.incomplete" or resp.get("status") == "incomplete":
+                self.incomplete = True
+            return ""
+        return ""
+
+    def finish_payload(self) -> dict:
+        items = self.output or [self.items[i] for i in sorted(self.items)]
+        content = []
+        tools = []
+        texts = []
+        for item in items:
+            kind = item.get("type")
+            if kind == "message":
+                bits = [part.get("text") or "" for part in (item.get("content") or []) if isinstance(part, dict) and part.get("text")]
+                if bits:
+                    joined = "".join(bits)
+                    texts.append(joined)
+                    content.append({"type": "text", "text": joined})
+            elif kind == "reasoning":
+                kept = {"type": "reasoning"}
+                for key in ("id", "encrypted_content", "summary"):
+                    if item.get(key) not in (None, "", []):
+                        kept[key] = item[key]
+                content.append(kept)
+            elif kind == "function_call":
+                raw = item.get("arguments") or "{}"
+                try:
+                    parsed = json.loads(raw) if isinstance(raw, str) else (raw or {})
+                except json.JSONDecodeError:
+                    parsed = {}
+                if not isinstance(parsed, dict):
+                    parsed = {}
+                call_id = item.get("call_id") or item.get("id") or "call"
+                content.append({"type": "tool_use", "id": call_id, "name": item.get("name") or "", "input": parsed})
+                tools.append({"id": call_id, "name": item.get("name") or "", "input": parsed})
+        text = "\n".join(texts) if texts else self.text
+        if not texts and text:
+            content.insert(0, {"type": "text", "text": text})
+        reason = "tool_use" if tools else ("max_tokens" if self.incomplete else "end_turn")
+        return {"text": text, "stop_reason": reason, "content": content, "tool_uses": tools}
 
 
 def _request(raw: bytes, key: str) -> urllib.request.Request:
@@ -625,27 +765,33 @@ def _sse(raw: bytes, key: str, cache_k: str | None = None):
     yield _sse_line({"type": "done", **done})
 
 
-def _openai_request(payload: dict, key: str) -> urllib.request.Request:
-    body = dict(payload)
-    body["stream"] = True
+def _openai_body(payload: dict, stream: bool) -> tuple[str, bytes]:
+    responses = payload.get("_endpoint") == "responses"
+    body = {k: v for k, v in payload.items() if k != "_endpoint"}
+    if stream:
+        body["stream"] = True
+    return (OPENAI_RESPONSES if responses else OPENAI_URL), json.dumps(body).encode()
+
+
+def _openai_request(payload: dict, key: str, stream: bool) -> urllib.request.Request:
+    url, raw = _openai_body(payload, stream)
     return urllib.request.Request(
-        OPENAI_URL,
-        data=json.dumps(body).encode(),
+        url,
+        data=raw,
         headers={"content-type": "application/json", "authorization": "Bearer " + key},
         method="POST",
     )
 
 
 def _complete_openai(payload: dict, key: str) -> dict:
-    req = urllib.request.Request(
-        OPENAI_URL,
-        data=json.dumps(payload).encode(),
-        headers={"content-type": "application/json", "authorization": "Bearer " + key},
-        method="POST",
-    )
     try:
-        with urllib.request.urlopen(req, timeout=90, context=_ssl_context()) as resp:
-            return _openai_reply(json.loads(resp.read().decode()))
+        with urllib.request.urlopen(_openai_request(payload, key, False), timeout=90, context=_ssl_context()) as resp:
+            data = json.loads(resp.read().decode())
+        if payload.get("_endpoint") == "responses":
+            fold = _RespFold()
+            fold.feed({"type": "response.completed" if data.get("status") != "incomplete" else "response.incomplete", "response": data})
+            return fold.finish_payload()
+        return _openai_reply(data)
     except urllib.error.HTTPError as e:
         raise HTTPException(502, _provider_error(e, "OpenAI"))
     except Exception:
@@ -654,10 +800,11 @@ def _complete_openai(payload: dict, key: str) -> dict:
 
 def _sse_openai(payload: dict, key: str, cache_k: str | None = None):
     yield _sse_line({"type": "ping"})
-    fold = _OpenFold()
+    responses = payload.get("_endpoint") == "responses"
+    fold = _RespFold() if responses else _OpenFold()
     last = time.monotonic()
     try:
-        with urllib.request.urlopen(_openai_request(payload, key), timeout=90, context=_ssl_context()) as resp:
+        with urllib.request.urlopen(_openai_request(payload, key, True), timeout=90, context=_ssl_context()) as resp:
             for raw_line in resp:
                 line = raw_line.decode("utf-8", "replace").strip()
                 if not line.startswith("data:"):
@@ -669,6 +816,12 @@ def _sse_openai(payload: dict, key: str, cache_k: str | None = None):
                     parsed = json.loads(data)
                 except json.JSONDecodeError:
                     continue
+                if responses and parsed.get("type") == "error":
+                    detail = parsed.get("message") or "The AI provider rejected the request"
+                    if "sk-" in str(detail).lower():
+                        detail = "The AI provider rejected the request"
+                    yield _sse_line({"type": "error", "detail": str(detail)[:180]})
+                    return
                 piece = fold.feed(parsed)
                 now = time.monotonic()
                 if piece:
@@ -682,6 +835,12 @@ def _sse_openai(payload: dict, key: str, cache_k: str | None = None):
         return
     except Exception:
         yield _sse_line({"type": "error", "detail": "The AI provider is unreachable"})
+        return
+    if getattr(fold, "error", None):
+        detail = fold.error
+        if "sk-" in detail.lower():
+            detail = "The AI provider rejected the request"
+        yield _sse_line({"type": "error", "detail": detail[:180]})
         return
     done = fold.finish_payload()
     if cache_k and done["text"] and not done["tool_uses"]:

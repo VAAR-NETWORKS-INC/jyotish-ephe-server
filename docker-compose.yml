@@ -14,6 +14,7 @@ services:
       ADMIN_KEY: ${ADMIN_KEY:?set ADMIN_KEY in jyotish-ephe-server/.env}
       ANALYTICS_DB: /data/analytics.db
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
     volumes:
       - ./data:/data
     expose:

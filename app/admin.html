@@ -24,6 +24,7 @@ pre{white-space:pre-wrap;word-break:break-all;font-size:12px;color:var(--mute);m
 </style></head><body><div class="wrap">
 <h1>Jyotish <span>AI</span> · Admin</h1><div class="note" id="gen">Anonymous usage analytics — no birth details, names, coordinates or chat text are collected.</div>
 <div class="card" id="login" style="margin-top:12px"><input id="key" type="password" placeholder="Admin key" style="width:240px"> <select id="days"><option>7</option><option selected>30</option><option>90</option><option>365</option></select> <button id="go">Load</button> <span id="err" class="err"></span><div id="stay" class="note" style="margin-top:8px"></div></div>
+<div id="llm"></div>
 <div id="out"></div>
 </div>
 <script>
@@ -47,13 +48,57 @@ function saveKey(key) {
 function askKey(msg) { try { localStorage.removeItem('jk'); localStorage.removeItem('jkExp'); } catch (e) {} $('key').value = ''; $('stay').textContent = ''; $('out').innerHTML = ''; $('err').textContent = msg || 'Enter the admin key.'; $('key').focus(); }
 $('key').value = readKey();
 if ($('key').value) saveKey($('key').value);
-async function api(path) {
+async function api(path, body) {
   const key = $('key').value.trim();
   if (!key) { const e = new Error('Enter the admin key.'); e.needKey = true; throw e; }
-  const r = await fetch(path, { headers: { 'x-admin-key': key } });
+  const r = await fetch(path, { method: body ? 'POST' : 'GET', headers: Object.assign({ 'x-admin-key': key }, body ? { 'content-type': 'application/json' } : {}), body: body ? JSON.stringify(body) : undefined });
   if (r.status === 401) { const e = new Error('That key was not accepted. Enter the admin key again.'); e.needKey = true; throw e; }
   if (!r.ok) { let detail = 'Request failed (' + r.status + '). Your saved key is still here.'; try { detail = (await r.json()).detail || detail; } catch (err) {} throw new Error(detail); }
   return r.json();
+}
+function fillModelLists() {
+  const presets = window._llmPresets || {};
+  [['basicProv', 'basicList'], ['advProv', 'advList']].forEach(pair => {
+    const names = presets[$(pair[0]).value] || [];
+    $(pair[1]).innerHTML = names.map(n => `<option value="${esc(n)}"></option>`).join('');
+  });
+}
+function renderLlm(s) {
+  window._llmPresets = s.presets || {};
+  const keyNote = s.openai_key_saved
+    ? `OpenAI key saved on this server${s.openai_key_hint ? ' (' + esc(s.openai_key_hint) + ')' : ''}. Leave the box blank to keep it.`
+    : (s.openai_key_set
+      ? `Using OPENAI_API_KEY from the server .env${s.openai_key_hint ? ' (' + esc(s.openai_key_hint) + ')' : ''}. Paste a key here to override it.`
+      : 'No OpenAI key yet. Paste one here, or set OPENAI_API_KEY in the server .env.');
+  $('llm').innerHTML = `<div class="card"><h2>Models</h2>
+    <div class="note">Basic is used for Ask, the daily horoscope, and the shorter chats. Advanced is used for a full reading and Varshaphal. Type any model id, or pick a suggestion. The next question uses the saved choice.</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px"><span style="width:72px">Basic</span>
+      <select id="basicProv"><option value="anthropic">Anthropic</option><option value="openai">OpenAI</option></select>
+      <input id="basicModel" list="basicList" style="width:260px" autocomplete="off"><datalist id="basicList"></datalist></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px"><span style="width:72px">Advanced</span>
+      <select id="advProv"><option value="anthropic">Anthropic</option><option value="openai">OpenAI</option></select>
+      <input id="advModel" list="advList" style="width:260px" autocomplete="off"><datalist id="advList"></datalist></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px"><span style="width:72px">OpenAI key</span>
+      <input id="openaiKey" type="password" placeholder="sk-…" style="width:260px" autocomplete="off">
+      ${s.openai_key_saved ? '<button type="button" id="llmClear" style="background:var(--card2);color:var(--txt);border:1px solid var(--line)">Remove saved key</button>' : ''}</div>
+    <div class="note" style="margin-top:6px">${keyNote} ${s.anthropic_key_set ? 'Anthropic key is set in the server .env.' : 'No Anthropic key in the server .env.'}</div>
+    <div style="margin-top:10px"><button type="button" id="llmSave">Save models</button> <span id="llmMsg" class="note"></span> <span id="llmErr" class="err"></span></div></div>`;
+  $('basicProv').value = s.basic.provider; $('basicModel').value = s.basic.model;
+  $('advProv').value = s.advanced.provider; $('advModel').value = s.advanced.model;
+  fillModelLists();
+  $('basicProv').onchange = fillModelLists; $('advProv').onchange = fillModelLists;
+  $('llmSave').onclick = () => saveLlm(false);
+  if ($('llmClear')) $('llmClear').onclick = () => saveLlm(true);
+}
+async function saveLlm(clear) {
+  $('llmErr').textContent = ''; $('llmMsg').textContent = '';
+  const body = { basic_provider: $('basicProv').value, basic_model: $('basicModel').value.trim(), advanced_provider: $('advProv').value, advanced_model: $('advModel').value.trim(), clear_openai_key: !!clear };
+  const typed = $('openaiKey').value.trim();
+  if (typed) body.openai_key = typed;
+  try {
+    renderLlm(await api('/admin/llm', body));
+    $('llmMsg').textContent = clear ? 'Saved OpenAI key removed.' : 'Saved. The next question uses these models.';
+  } catch (e) { if (e.needKey) askKey(e.message); else $('llmErr').textContent = e.message; }
 }
 const table = (rows, cols, maxCol) => { if (!rows.length) return '<div class="note">No data yet.</div>'; const mx = maxCol ? Math.max(...rows.map(r => +r[maxCol] || 0), 1) : 0;
   return `<table><tr>${cols.map(c => `<th>${c[1]}</th>`).join('')}${maxCol ? '<th></th>' : ''}</tr>${rows.map(r => `<tr>${cols.map(c => `<td class="${typeof r[c[0]] === 'number' ? 'n' : ''}">${esc(r[c[0]])}</td>`).join('')}${maxCol ? `<td style="width:90px"><div class="hb"><i style="width:${(+r[maxCol] || 0) / mx * 100}%"></i></div></td>` : ''}</tr>`).join('')}</table>`; };
@@ -62,6 +107,8 @@ async function load() {
   const key = $('key').value.trim();
   if (!key) { askKey('Enter the admin key.'); return; }
   saveKey(key);
+  try { renderLlm(await api('/admin/llm')); }
+  catch (e) { if (e.needKey) { askKey(e.message); return; } $('llm').innerHTML = ''; $('err').textContent = e.message; }
   try {
     const s = await api('/admin/stats?days=' + $('days').value), T = s.totals;
     $('gen').textContent = `Updated ${s.generated} · last ${s.days} days`;

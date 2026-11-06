@@ -1,0 +1,35 @@
+# Dedicated box only. On the shared Hetzner server use docker-compose.yml
+# and the existing ualbums-caddy (ports 80 and 443 are already taken).
+name: jyotish-ephe
+
+services:
+  ephe:
+    build: .
+    image: jyotish-ephe:latest
+    container_name: jyotish-ephe
+    restart: unless-stopped
+    environment:
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-*}
+      API_KEY: ${API_KEY:-}
+      ADMIN_KEY: ${ADMIN_KEY:?set ADMIN_KEY in .env}
+      ANALYTICS_DB: /data/analytics.db
+    volumes:
+      - ./data:/data
+    expose:
+      - "8000"
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN in .env, e.g. ephe.yourdomain.com}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [ephe]
+
+volumes:
+  caddy_data:
+  caddy_config:

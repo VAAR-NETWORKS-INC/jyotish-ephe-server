@@ -1,0 +1,26 @@
+# Runs beside the uAlbums stack. Do not publish 80/443 — ualbums-caddy already owns them.
+# Caddy reaches this container as jyotish-ephe:8000 on the external network ualbums_net.
+name: jyotish-ephe
+
+services:
+  ephe:
+    build: .
+    image: jyotish-ephe:latest
+    container_name: jyotish-ephe
+    restart: unless-stopped
+    environment:
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-*}
+      API_KEY: ${API_KEY:-}
+      ADMIN_KEY: ${ADMIN_KEY:?set ADMIN_KEY in jyotish-ephe-server/.env}
+      ANALYTICS_DB: /data/analytics.db
+    volumes:
+      - ./data:/data
+    expose:
+      - "8000"
+    networks:
+      - ualbums_net
+
+networks:
+  ualbums_net:
+    external: true
+    name: ualbums_net

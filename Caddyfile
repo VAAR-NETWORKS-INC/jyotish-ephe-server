@@ -1,0 +1,6 @@
+# Used only by docker-compose.standalone.yml. The shared Hetzner box
+# proxies this API from ualbums-server-infra/caddy/Caddyfile.
+{$DOMAIN} {
+	encode zstd gzip
+	reverse_proxy ephe:8000
+}

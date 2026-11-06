@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Jyotish AI — Admin</title>
+<style>
+:root{--bg:#120d1f;--card:#1c1530;--card2:#251c3e;--line:#3a2d5c;--txt:#efe8ff;--mute:#a99ccc;--gold:#f2b84b;--good:#5fd39a;--bad:#ff7a7a}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--txt);font:14px/1.5 system-ui,-apple-system,Segoe UI,sans-serif}
+.wrap{max-width:1100px;margin:0 auto;padding:18px}
+h1{font-size:22px;margin:0 0 4px}h1 span{color:var(--gold)}h2{font-size:15px;color:var(--gold);margin:0 0 10px}
+.note{color:var(--mute);font-size:12px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:12px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:12px}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:12px}
+.kpi{background:var(--card2);border-radius:10px;padding:12px}.kpi b{display:block;font-size:24px}.kpi span{color:var(--mute);font-size:12px;text-transform:uppercase;letter-spacing:.5px}
+table{width:100%;border-collapse:collapse}td,th{text-align:left;padding:5px 6px;border-bottom:1px solid var(--line);font-size:13px}th{color:var(--mute);font-weight:500}
+td.n{text-align:right;font-variant-numeric:tabular-nums}
+.bars{display:flex;align-items:flex-end;gap:3px;height:140px;padding-top:8px}
+.bars div{flex:1;background:linear-gradient(180deg,var(--gold),#ff8a3d);border-radius:3px 3px 0 0;min-height:2px;position:relative}
+.bars div:hover::after{content:attr(data-t);position:absolute;bottom:100%;left:50%;transform:translateX(-50%);background:#000;padding:2px 6px;border-radius:4px;font-size:11px;white-space:nowrap}
+.hb{height:6px;background:var(--card2);border-radius:4px;overflow:hidden}.hb i{display:block;height:100%;background:var(--gold)}
+input,select,button{background:var(--card2);border:1px solid var(--line);color:var(--txt);border-radius:8px;padding:8px 10px;font:inherit}
+button{background:linear-gradient(135deg,#ff8a3d,var(--gold));color:#1a1030;border:0;font-weight:600;cursor:pointer}
+a{color:var(--gold);cursor:pointer}.err{color:var(--bad)}
+pre{white-space:pre-wrap;word-break:break-all;font-size:12px;color:var(--mute);margin:0}
+</style></head><body><div class="wrap">
+<h1>Jyotish <span>AI</span> · Admin</h1><div class="note" id="gen">Anonymous usage analytics — no birth details, names, coordinates or chat text are collected.</div>
+<div class="card" id="login" style="margin-top:12px"><input id="key" type="password" placeholder="Admin key" style="width:240px"> <select id="days"><option>7</option><option selected>30</option><option>90</option><option>365</option></select> <button id="go">Load</button> <span id="err" class="err"></span></div>
+<div id="out"></div>
+</div>
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+$('key').value = sessionStorage.getItem('jk') || '';
+async function api(path) { const r = await fetch(path, { headers: { 'x-admin-key': $('key').value } }); if (!r.ok) throw new Error((await r.json()).detail || r.status); return r.json(); }
+const table = (rows, cols, maxCol) => { if (!rows.length) return '<div class="note">No data yet.</div>'; const mx = maxCol ? Math.max(...rows.map(r => +r[maxCol] || 0), 1) : 0;
+  return `<table><tr>${cols.map(c => `<th>${c[1]}</th>`).join('')}${maxCol ? '<th></th>' : ''}</tr>${rows.map(r => `<tr>${cols.map(c => `<td class="${typeof r[c[0]] === 'number' ? 'n' : ''}">${esc(r[c[0]])}</td>`).join('')}${maxCol ? `<td style="width:90px"><div class="hb"><i style="width:${(+r[maxCol] || 0) / mx * 100}%"></i></div></td>` : ''}</tr>`).join('')}</table>`; };
+async function load() {
+  $('err').textContent = ''; sessionStorage.setItem('jk', $('key').value);
+  try {
+    const s = await api('/admin/stats?days=' + $('days').value), T = s.totals;
+    $('gen').textContent = `Updated ${s.generated} · last ${s.days} days`;
+    const mx = Math.max(...s.daily.map(d => d.users), 1), ret = s.retention[0] || {};
+    $('out').innerHTML = `<div class="kpis">
+      <div class="kpi"><span>Daily active</span><b>${T.dau}</b></div><div class="kpi"><span>Weekly active</span><b>${T.wau}</b></div>
+      <div class="kpi"><span>Monthly active</span><b>${T.mau}</b></div><div class="kpi"><span>Total users</span><b>${T.users}</b></div>
+      <div class="kpi"><span>Made a kundli</span><b>${T.with_kundli}</b><span>${T.users ? Math.round(100 * T.with_kundli / T.users) : 0}% of users</span></div>
+      <div class="kpi"><span>Retention D1 / D7</span><b>${ret.d1_pct ?? '–'}% / ${ret.d7_pct ?? '–'}%</b><span>cohort ${ret.cohort || 0}</span></div></div>
+    <div class="card"><h2>Daily active users</h2><div class="bars">${s.daily.map(d => `<div style="height:${d.users / mx * 100}%" data-t="${d.day}: ${d.users} users · ${d.sessions} sessions"></div>`).join('')}</div>
+      <div class="note">${s.daily.length ? s.daily[0].day + ' → ' + s.daily[s.daily.length - 1].day : ''} · new users: ${s.new_users.reduce((a, b) => a + b.n, 0)}</div></div>
+    <div class="grid">
+      <div class="card"><h2>Screens used</h2>${table(s.top_tabs, [['tab', 'Tab'], ['n', 'Views'], ['users', 'Users']], 'n')}</div>
+      <div class="card"><h2>Top actions</h2>${table(s.top_events, [['name', 'Event'], ['n', 'Count'], ['users', 'Users']], 'n')}</div>
+      <div class="card"><h2>Cities</h2>${table(s.cities, [['city', 'City'], ['users', 'Users']], 'users')}</div>
+      <div class="card"><h2>AI usage</h2>${table(s.ai.by_chat, [['chat', 'Chat'], ['questions', 'Questions'], ['users', 'Users'], ['avg_ms', 'Avg ms'], ['failed', 'Failed']])}<h2 style="margin-top:12px">Engine tools called by AI</h2>${table(s.ai.tools, [['tool', 'Tool'], ['n', 'Calls']], 'n')}</div>
+      <div class="card"><h2>Muhurtham searches</h2>${table(s.muhurtham, [['event', 'Event'], ['n', 'Searches']], 'n')}<h2 style="margin-top:12px">Platforms</h2>${table(s.platforms, [['platform', 'Platform'], ['users', 'Users']], 'users')}<h2 style="margin-top:12px">Kundli engine</h2>${table(s.engine, [['engine', 'Engine'], ['n', 'Charts']])}</div>
+      <div class="card" style="grid-column:1/-1"><h2>Recent users</h2><table><tr><th>ID</th><th>Last seen</th><th>City</th><th>Kundli</th><th>Events</th></tr>${s.recent_users.map(u => `<tr><td><a data-u="${esc(u.uid)}">${esc(u.uid)}</a></td><td>${esc(u.last_seen.slice(0, 16).replace('T', ' '))}</td><td>${esc(u.city || '')}</td><td>${u.has_kundli ? '✓' : ''}</td><td class="n">${u.events}</td></tr>`).join('')}</table><div id="tl"></div></div>
+    </div>`;
+    document.querySelectorAll('[data-u]').forEach(a => a.onclick = async () => { const t = await api('/admin/user/' + a.dataset.u);
+      $('tl').innerHTML = `<h2 style="margin-top:12px">Trail for ${esc(a.dataset.u)} · ${esc(t.user.platform)} · first seen ${esc(t.user.first_seen.slice(0, 10))}</h2><table>${t.events.map(e => `<tr><td style="white-space:nowrap">${esc(e.ts.slice(5, 16).replace('T', ' '))}</td><td>${esc(e.name)}</td><td><pre>${esc(e.props)}</pre></td></tr>`).join('')}</table>`; });
+  } catch (e) { $('err').textContent = e.message; }
+}
+$('go').onclick = load; if ($('key').value) load();
+</script></body></html>

@@ -313,6 +313,9 @@ def _sse(raw: bytes, key: str, cache_k: str | None = None):
     payload["stream"] = True
     body = json.dumps(payload).encode()
     fold = _Fold()
+    # Thinking produces no visible text. Forward a ping so a proxy does not
+    # close the connection while the model is still working.
+    last = time.monotonic()
     try:
         with urllib.request.urlopen(_request(body, key), timeout=90, context=_ssl_context()) as resp:
             event = ""
@@ -326,8 +329,13 @@ def _sse(raw: bytes, key: str, cache_k: str | None = None):
                     except json.JSONDecodeError:
                         continue
                     piece = fold.feed(event, data)
+                    now = time.monotonic()
                     if piece:
                         yield _sse_line({"type": "delta", "text": piece})
+                        last = now
+                    elif event == "ping" or now - last >= 5:
+                        yield _sse_line({"type": "ping"})
+                        last = now
     except urllib.error.HTTPError as e:
         yield _sse_line({"type": "error", "detail": _provider_error(e)})
         return

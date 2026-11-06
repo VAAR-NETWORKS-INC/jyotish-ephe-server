@@ -35,8 +35,8 @@ def _key() -> str:
 
 def _model(tier: str) -> str:
     if tier == "quick":
-        return os.environ.get("ANTHROPIC_MODEL_QUICK", "claude-haiku-4-5")
-    return os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-5")
+        return os.environ.get("ANTHROPIC_MODEL_QUICK", "claude-haiku-5-5")
+    return os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-5-5")
 
 
 class Msg(BaseModel):
@@ -65,11 +65,12 @@ class AIReq(BaseModel):
     tools: list[ToolDef] = []
     stream: bool = False
     cache_id: CacheId | None = None
+    cache_key: str | None = None
 
 
 # Readings that include "current" dasha and transits. Same birth is reused until this age.
 CACHE_TTL = 30 * 86400
-CACHE_VERSION = "1"
+CACHE_VERSION = "2"
 _cache_init = threading.Lock()
 
 
@@ -89,6 +90,8 @@ class _Fold:
                 self.blocks.append({"type": "text", "text": block.get("text") or ""})
             elif kind == "tool_use":
                 self.blocks.append({"type": "tool_use", "id": block.get("id"), "name": block.get("name"), "input": "", "_raw": ""})
+            elif kind in ("thinking", "redacted_thinking"):
+                self.blocks.append(dict(block))
             return ""
         if event == "content_block_delta":
             delta = data.get("delta") or {}
@@ -100,6 +103,10 @@ class _Fold:
                 cur["text"] += piece
                 self.text += piece
                 return piece
+            if delta.get("type") == "thinking_delta" and cur.get("type") == "thinking":
+                cur["thinking"] = (cur.get("thinking") or "") + (delta.get("thinking") or "")
+            elif delta.get("type") == "signature_delta" and cur.get("type") == "thinking":
+                cur["signature"] = (cur.get("signature") or "") + (delta.get("signature") or "")
             if delta.get("type") == "input_json_delta" and cur.get("type") == "tool_use":
                 cur["_raw"] += delta.get("partial_json") or ""
             return ""
@@ -125,6 +132,8 @@ class _Fold:
                 item = {"type": "tool_use", "id": b.get("id"), "name": b.get("name"), "input": b.get("input") or {}}
                 content.append(item)
                 tools.append({"id": item["id"], "name": item["name"], "input": item["input"]})
+            elif b.get("type") in ("thinking", "redacted_thinking"):
+                content.append({k: v for k, v in b.items() if not str(k).startswith("_")})
         return {"text": self.text, "stop_reason": self.stop, "content": content, "tool_uses": tools}
 
 
@@ -213,7 +222,7 @@ def _cached_sse(text: str):
 
 @router.post("/v1/ai")
 def ai_complete(body: AIReq, request: Request):
-    cache_k = _cache_key(body.cache_id)
+    cache_k = body.cache_key if body.cache_key and re.fullmatch(r"[0-9a-f]{64}", body.cache_key) else _cache_key(body.cache_id)
     if cache_k:
         hit = _cache_get(cache_k)
         if hit:
@@ -233,7 +242,7 @@ def ai_complete(body: AIReq, request: Request):
             raise HTTPException(400, "bad message role")
     payload: dict = {
         "model": _model(body.tier),
-        "max_tokens": 1200 if body.tier == "quick" else 2200,
+        "max_tokens": 4000 if body.tier == "quick" else 8000,
         "messages": [m.model_dump() for m in body.messages],
     }
     if body.tools:

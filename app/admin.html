@@ -30,11 +30,22 @@ pre{white-space:pre-wrap;word-break:break-all;font-size:12px;color:var(--mute);m
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
 $('key').value = sessionStorage.getItem('jk') || '';
-async function api(path) { const r = await fetch(path, { headers: { 'x-admin-key': $('key').value } }); if (!r.ok) throw new Error((await r.json()).detail || r.status); return r.json(); }
+function askKey(msg) { sessionStorage.removeItem('jk'); $('key').value = ''; $('out').innerHTML = ''; $('err').textContent = msg || 'Enter the admin key.'; $('key').focus(); }
+async function api(path) {
+  const key = $('key').value.trim();
+  if (!key) { const e = new Error('Enter the admin key.'); e.needKey = true; throw e; }
+  const r = await fetch(path, { headers: { 'x-admin-key': key } });
+  if (r.status === 401 || r.status === 403) { const e = new Error('That key was not accepted. Enter the admin key again.'); e.needKey = true; throw e; }
+  if (!r.ok) { let detail = String(r.status); try { detail = (await r.json()).detail || detail; } catch (err) {} throw new Error(detail); }
+  return r.json();
+}
 const table = (rows, cols, maxCol) => { if (!rows.length) return '<div class="note">No data yet.</div>'; const mx = maxCol ? Math.max(...rows.map(r => +r[maxCol] || 0), 1) : 0;
   return `<table><tr>${cols.map(c => `<th>${c[1]}</th>`).join('')}${maxCol ? '<th></th>' : ''}</tr>${rows.map(r => `<tr>${cols.map(c => `<td class="${typeof r[c[0]] === 'number' ? 'n' : ''}">${esc(r[c[0]])}</td>`).join('')}${maxCol ? `<td style="width:90px"><div class="hb"><i style="width:${(+r[maxCol] || 0) / mx * 100}%"></i></div></td>` : ''}</tr>`).join('')}</table>`; };
 async function load() {
-  $('err').textContent = ''; sessionStorage.setItem('jk', $('key').value);
+  $('err').textContent = '';
+  const key = $('key').value.trim();
+  if (!key) { askKey('Enter the admin key.'); return; }
+  sessionStorage.setItem('jk', key);
   try {
     const s = await api('/admin/stats?days=' + $('days').value), T = s.totals;
     $('gen').textContent = `Updated ${s.generated} · last ${s.days} days`;
@@ -56,7 +67,7 @@ async function load() {
     </div>`;
     document.querySelectorAll('[data-u]').forEach(a => a.onclick = async () => { const t = await api('/admin/user/' + a.dataset.u);
       $('tl').innerHTML = `<h2 style="margin-top:12px">Trail for ${esc(a.dataset.u)} · ${esc(t.user.platform)} · first seen ${esc(t.user.first_seen.slice(0, 10))}</h2><table>${t.events.map(e => `<tr><td style="white-space:nowrap">${esc(e.ts.slice(5, 16).replace('T', ' '))}</td><td>${esc(e.name)}</td><td><pre>${esc(e.props)}</pre></td></tr>`).join('')}</table>`; });
-  } catch (e) { $('err').textContent = e.message; }
+  } catch (e) { if (e.needKey) askKey(e.message); else $('err').textContent = e.message; }
 }
 $('go').onclick = load; if ($('key').value) load();
 </script></body></html>

@@ -1,5 +1,14 @@
 # Jyotish Ephemeris API
 
+# Local Development
+cd /Users/vadaliramesh/Projects/jyotish/jyotish-ephe-server
+python3.11 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+EPHE_PATH=./ephe uvicorn app.main:app --reload --port 8000
+
+
+
 High-precision Vedic astronomy service for the Jyotish AI app: **native Swiss Ephemeris** (pyswisseph 2.10, official `.se1` files, 1800–2400 AD) behind a small FastAPI app, served over HTTPS by Caddy. Built to run on a Hetzner box with Docker.
 
 What it gives you over the app's built-in formulas:

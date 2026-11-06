@@ -22,14 +22,20 @@ import swisseph as swe
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
+from .envfile import load_local_env
+
+load_local_env()
 EPHE_PATH = os.environ.get("EPHE_PATH", os.path.join(os.path.dirname(__file__), "..", "ephe"))
 swe.set_ephe_path(EPHE_PATH)
 ALLOWED_ORIGINS = [o.strip() for o in os.environ.get("ALLOWED_ORIGINS", "*").split(",")]
 
 app = FastAPI(title="Jyotish Ephemeris API", version="1.1.0")
 from .analytics import router as analytics_router  # noqa: E402
+from .ai import router as ai_router  # noqa: E402
 app.include_router(analytics_router)
+app.include_router(ai_router)
 API_KEY = os.environ.get("API_KEY", "")   # optional: require header x-api-key
 
 
@@ -49,6 +55,9 @@ async def guard_and_cache(request, call_next):
 
 
 app.add_middleware(CORSMiddleware, allow_origins=ALLOWED_ORIGINS, allow_methods=["GET", "POST"], allow_headers=["*"], max_age=86400)
+# Caddy connects from the Docker network, not 127.0.0.1. Trust its X-Forwarded-Proto
+# so redirects stay on https. Otherwise /admin/ is sent to http:// and the browser blocks it.
+app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
 
 # ---------------------------------------------------------------- constants
 AYANAMSA = {

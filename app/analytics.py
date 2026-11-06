@@ -23,6 +23,9 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
+from .envfile import load_local_env
+
+load_local_env()
 DB_PATH = os.environ.get("ANALYTICS_DB", os.path.join(os.path.dirname(__file__), "..", "data", "analytics.db"))
 ADMIN_KEY = os.environ.get("ADMIN_KEY", "")
 NAME_RE = re.compile(r"^[a-z][a-z0-9_]{1,40}$")
@@ -129,8 +132,10 @@ async def ingest(request: Request):
 def _admin(key: str | None):
     if not ADMIN_KEY:
         raise HTTPException(503, "ADMIN_KEY not configured on the server")
+    if not key:
+        raise HTTPException(401, "Enter the admin key")
     if key != ADMIN_KEY:
-        raise HTTPException(401, "bad admin key")
+        raise HTTPException(401, "That key was not accepted. Enter it again.")
 
 def q(sql: str, *a):
     return [dict(r) for r in db().execute(sql, a).fetchall()]
@@ -188,7 +193,12 @@ def user_timeline(uid_prefix: str, x_admin_key: str | None = Header(None)):
     if not u: raise HTTPException(404, "not found")
     return {"user": u[0], "events": q("SELECT ts, name, props FROM events WHERE uid=? ORDER BY ts DESC LIMIT 200", u[0]["uid"])}
 
-@router.get("/admin", response_class=HTMLResponse)
-def dashboard():
+def _dashboard():
     with open(os.path.join(os.path.dirname(__file__), "admin.html"), encoding="utf-8") as f:
-        return f.read()
+        html = f.read()
+    return HTMLResponse(html, headers={"Cache-Control": "no-store"})
+
+@router.get("/admin", response_class=HTMLResponse)
+@router.get("/admin/", response_class=HTMLResponse, include_in_schema=False)
+def dashboard():
+    return _dashboard()

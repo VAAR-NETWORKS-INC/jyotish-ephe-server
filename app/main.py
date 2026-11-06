@@ -31,7 +31,7 @@ EPHE_PATH = os.environ.get("EPHE_PATH", os.path.join(os.path.dirname(__file__), 
 swe.set_ephe_path(EPHE_PATH)
 ALLOWED_ORIGINS = [o.strip() for o in os.environ.get("ALLOWED_ORIGINS", "*").split(",")]
 
-app = FastAPI(title="Jyotish Ephemeris API", version="1.1.0")
+app = FastAPI(title="Jyotish Ephemeris API", version="1.1.0", redirect_slashes=False)
 from .analytics import router as analytics_router  # noqa: E402
 from .ai import router as ai_router  # noqa: E402
 app.include_router(analytics_router)

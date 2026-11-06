@@ -196,7 +196,11 @@ def user_timeline(uid_prefix: str, x_admin_key: str | None = Header(None)):
 def _dashboard():
     with open(os.path.join(os.path.dirname(__file__), "admin.html"), encoding="utf-8") as f:
         html = f.read()
-    return HTMLResponse(html, headers={"Cache-Control": "no-store"})
+    return HTMLResponse(html, headers={
+        "Cache-Control": "no-store, no-cache, must-revalidate",
+        "Pragma": "no-cache",
+        "Expires": "0",
+    })
 
 @router.get("/admin", response_class=HTMLResponse)
 @router.get("/admin/", response_class=HTMLResponse, include_in_schema=False)

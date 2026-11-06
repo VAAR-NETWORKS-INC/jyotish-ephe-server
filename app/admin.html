@@ -23,21 +23,36 @@ a{color:var(--gold);cursor:pointer}.err{color:var(--bad)}
 pre{white-space:pre-wrap;word-break:break-all;font-size:12px;color:var(--mute);margin:0}
 </style></head><body><div class="wrap">
 <h1>Jyotish <span>AI</span> · Admin</h1><div class="note" id="gen">Anonymous usage analytics — no birth details, names, coordinates or chat text are collected.</div>
-<div class="card" id="login" style="margin-top:12px"><input id="key" type="password" placeholder="Admin key" style="width:240px"> <select id="days"><option>7</option><option selected>30</option><option>90</option><option>365</option></select> <button id="go">Load</button> <span id="err" class="err"></span></div>
+<div class="card" id="login" style="margin-top:12px"><input id="key" type="password" placeholder="Admin key" style="width:240px"> <select id="days"><option>7</option><option selected>30</option><option>90</option><option>365</option></select> <button id="go">Load</button> <span id="err" class="err"></span><div id="stay" class="note" style="margin-top:8px"></div></div>
 <div id="out"></div>
 </div>
 <script>
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
-try { if (!localStorage.getItem('jk') && sessionStorage.getItem('jk')) localStorage.setItem('jk', sessionStorage.getItem('jk')); } catch (e) {}
-$('key').value = localStorage.getItem('jk') || '';
-function askKey(msg) { try { localStorage.removeItem('jk'); } catch (e) {} $('key').value = ''; $('out').innerHTML = ''; $('err').textContent = msg || 'Enter the admin key.'; $('key').focus(); }
+const KEY_TTL = 12 * 60 * 60 * 1000;
+function readKey() {
+  try {
+    if (!localStorage.getItem('jk') && sessionStorage.getItem('jk')) localStorage.setItem('jk', sessionStorage.getItem('jk'));
+    const key = localStorage.getItem('jk') || '';
+    const exp = +localStorage.getItem('jkExp') || 0;
+    if (!key) return '';
+    if (exp && Date.now() > exp) { localStorage.removeItem('jk'); localStorage.removeItem('jkExp'); return ''; }
+    return key;
+  } catch (e) { return ''; }
+}
+function saveKey(key) {
+  try { localStorage.setItem('jk', key); localStorage.setItem('jkExp', String(Date.now() + KEY_TTL)); } catch (e) {}
+  $('stay').textContent = 'Saved on this browser. Each visit extends it by 12 hours.';
+}
+function askKey(msg) { try { localStorage.removeItem('jk'); localStorage.removeItem('jkExp'); } catch (e) {} $('key').value = ''; $('stay').textContent = ''; $('out').innerHTML = ''; $('err').textContent = msg || 'Enter the admin key.'; $('key').focus(); }
+$('key').value = readKey();
+if ($('key').value) saveKey($('key').value);
 async function api(path) {
   const key = $('key').value.trim();
   if (!key) { const e = new Error('Enter the admin key.'); e.needKey = true; throw e; }
   const r = await fetch(path, { headers: { 'x-admin-key': key } });
-  if (r.status === 401 || r.status === 403) { const e = new Error('That key was not accepted. Enter the admin key again.'); e.needKey = true; throw e; }
-  if (!r.ok) { let detail = String(r.status); try { detail = (await r.json()).detail || detail; } catch (err) {} throw new Error(detail); }
+  if (r.status === 401) { const e = new Error('That key was not accepted. Enter the admin key again.'); e.needKey = true; throw e; }
+  if (!r.ok) { let detail = 'Request failed (' + r.status + '). Your saved key is still here.'; try { detail = (await r.json()).detail || detail; } catch (err) {} throw new Error(detail); }
   return r.json();
 }
 const table = (rows, cols, maxCol) => { if (!rows.length) return '<div class="note">No data yet.</div>'; const mx = maxCol ? Math.max(...rows.map(r => +r[maxCol] || 0), 1) : 0;
@@ -46,7 +61,7 @@ async function load() {
   $('err').textContent = '';
   const key = $('key').value.trim();
   if (!key) { askKey('Enter the admin key.'); return; }
-  try { localStorage.setItem('jk', key); } catch (e) {}
+  saveKey(key);
   try {
     const s = await api('/admin/stats?days=' + $('days').value), T = s.totals;
     $('gen').textContent = `Updated ${s.generated} · last ${s.days} days`;

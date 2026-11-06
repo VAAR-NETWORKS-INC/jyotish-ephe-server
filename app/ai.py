@@ -9,6 +9,7 @@ import urllib.error
 import urllib.request
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 router = APIRouter()
@@ -49,6 +50,62 @@ class AIReq(BaseModel):
     tier: str = "default"
     messages: list[Msg]
     tools: list[ToolDef] = []
+    stream: bool = False
+
+
+class _Fold:
+    """Turn Anthropic SSE events into text deltas and a final message."""
+
+    def __init__(self) -> None:
+        self.blocks: list[dict] = []
+        self.text = ""
+        self.stop: str | None = None
+
+    def feed(self, event: str, data: dict) -> str:
+        if event == "content_block_start":
+            block = data.get("content_block") or {}
+            kind = block.get("type")
+            if kind == "text":
+                self.blocks.append({"type": "text", "text": block.get("text") or ""})
+            elif kind == "tool_use":
+                self.blocks.append({"type": "tool_use", "id": block.get("id"), "name": block.get("name"), "input": "", "_raw": ""})
+            return ""
+        if event == "content_block_delta":
+            delta = data.get("delta") or {}
+            if not self.blocks:
+                return ""
+            cur = self.blocks[-1]
+            if delta.get("type") == "text_delta" and cur.get("type") == "text":
+                piece = delta.get("text") or ""
+                cur["text"] += piece
+                self.text += piece
+                return piece
+            if delta.get("type") == "input_json_delta" and cur.get("type") == "tool_use":
+                cur["_raw"] += delta.get("partial_json") or ""
+            return ""
+        if event == "content_block_stop" and self.blocks and self.blocks[-1].get("type") == "tool_use":
+            cur = self.blocks[-1]
+            raw = cur.pop("_raw", "") or "{}"
+            try:
+                cur["input"] = json.loads(raw)
+            except json.JSONDecodeError:
+                cur["input"] = {}
+            return ""
+        if event == "message_delta":
+            self.stop = (data.get("delta") or {}).get("stop_reason") or self.stop
+        return ""
+
+    def finish(self) -> dict:
+        content = []
+        tools = []
+        for b in self.blocks:
+            if b.get("type") == "text":
+                content.append({"type": "text", "text": b.get("text") or ""})
+            elif b.get("type") == "tool_use":
+                item = {"type": "tool_use", "id": b.get("id"), "name": b.get("name"), "input": b.get("input") or {}}
+                content.append(item)
+                tools.append({"id": item["id"], "name": item["name"], "input": item["input"]})
+        return {"text": self.text, "stop_reason": self.stop, "content": content, "tool_uses": tools}
 
 
 def _limit(ip: str) -> None:
@@ -91,21 +148,42 @@ def ai_complete(body: AIReq, request: Request):
     raw = json.dumps(payload).encode()
     if len(raw) > 150_000:
         raise HTTPException(413, "request too large")
-    req = urllib.request.Request(
+    if body.stream:
+        return StreamingResponse(
+            _sse(raw, key),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"},
+        )
+    data = _complete(raw, key)
+    return _reply(data)
+
+
+def _request(raw: bytes, key: str) -> urllib.request.Request:
+    return urllib.request.Request(
         ANTHROPIC_URL,
         data=raw,
         headers={"content-type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01"},
         method="POST",
     )
+
+
+def _provider_error(e: urllib.error.HTTPError) -> str:
+    if e.code in (401, 403):
+        return "The Anthropic API key was rejected"
+    return "The AI provider rejected the request"
+
+
+def _complete(raw: bytes, key: str) -> dict:
     try:
-        with urllib.request.urlopen(req, timeout=90, context=_ssl_context()) as resp:
-            data = json.loads(resp.read().decode())
+        with urllib.request.urlopen(_request(raw, key), timeout=90, context=_ssl_context()) as resp:
+            return json.loads(resp.read().decode())
     except urllib.error.HTTPError as e:
-        if e.code in (401, 403):
-            raise HTTPException(502, "The Anthropic API key was rejected")
-        raise HTTPException(502, "The AI provider rejected the request")
+        raise HTTPException(502, _provider_error(e))
     except Exception:
         raise HTTPException(502, "The AI provider is unreachable")
+
+
+def _reply(data: dict) -> dict:
     content = data.get("content") or []
     text = "".join(b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text")
     tool_uses = [
@@ -113,3 +191,39 @@ def ai_complete(body: AIReq, request: Request):
         for b in content if isinstance(b, dict) and b.get("type") == "tool_use"
     ]
     return {"text": text, "stop_reason": data.get("stop_reason"), "content": content, "tool_uses": tool_uses}
+
+
+def _sse_line(obj: dict) -> bytes:
+    return ("data: " + json.dumps(obj, ensure_ascii=False) + "\n\n").encode()
+
+
+def _sse(raw: bytes, key: str):
+    # A first byte goes out before the model starts, so a proxy does not
+    # treat the long reading as a dead connection and drop it.
+    yield _sse_line({"type": "ping"})
+    payload = json.loads(raw)
+    payload["stream"] = True
+    body = json.dumps(payload).encode()
+    fold = _Fold()
+    try:
+        with urllib.request.urlopen(_request(body, key), timeout=90, context=_ssl_context()) as resp:
+            event = ""
+            for raw_line in resp:
+                line = raw_line.decode("utf-8", "replace").strip()
+                if line.startswith("event:"):
+                    event = line[6:].strip()
+                elif line.startswith("data:"):
+                    try:
+                        data = json.loads(line[5:].strip())
+                    except json.JSONDecodeError:
+                        continue
+                    piece = fold.feed(event, data)
+                    if piece:
+                        yield _sse_line({"type": "delta", "text": piece})
+    except urllib.error.HTTPError as e:
+        yield _sse_line({"type": "error", "detail": _provider_error(e)})
+        return
+    except Exception:
+        yield _sse_line({"type": "error", "detail": "The AI provider is unreachable"})
+        return
+    yield _sse_line({"type": "done", **fold.finish()})

@@ -18,13 +18,12 @@ uAlbums already binds ports 80 and 443 with `ualbums-caddy`. This service joins 
 
 ```bash
 cd /path/to/ualbums-server-infra
-# .env — hostname Caddy will serve. Create the DNS A record first.
-# EPHE_DOMAIN=ephe.yourdomain.com
+# DNS A record: ephe.vadali.com -> this server, before the first request.
 ./scripts/deploy-hetzner.sh ephe
-curl https://ephe.yourdomain.com/health
+curl https://ephe.vadali.com/health
 ```
 
-The script creates `jyotish-ephe-server/.env` with `ADMIN_KEY` on first run, builds `jyotish-ephe`, and reloads Caddy. The dashboard is `https://ephe.yourdomain.com/admin`.
+The script clones [jyotish-ephe-server](https://github.com/VAAR-NETWORKS-INC/jyotish-ephe-server) next to `ualbums-server-infra`, creates `.env` with `ADMIN_KEY` on first run, builds `jyotish-ephe`, and reloads Caddy. The dashboard is `https://ephe.vadali.com/admin`.
 
 A dedicated machine that is not already serving 80/443 can still use `docker compose -f docker-compose.standalone.yml up -d --build` with `DOMAIN` set in `.env`.
 

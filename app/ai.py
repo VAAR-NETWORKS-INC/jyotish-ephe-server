@@ -1,9 +1,13 @@
 """Chat proxy. ANTHROPIC_API_KEY stays on the server. Prompts and replies are not logged."""
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import re
+import sqlite3
 import ssl
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -46,11 +50,27 @@ class ToolDef(BaseModel):
     input_schema: dict = Field(default_factory=dict)
 
 
+class CacheId(BaseModel):
+    birth: str
+    lat: float
+    lon: float
+    tz: str
+    lang: str = "en"
+    ayanamsa: str = "lahiri"
+
+
 class AIReq(BaseModel):
     tier: str = "default"
     messages: list[Msg]
     tools: list[ToolDef] = []
     stream: bool = False
+    cache_id: CacheId | None = None
+
+
+# Readings that include "current" dasha and transits. Same birth is reused until this age.
+CACHE_TTL = 30 * 86400
+CACHE_VERSION = "1"
+_cache_init = threading.Lock()
 
 
 class _Fold:
@@ -122,8 +142,84 @@ def ai_status():
     return {"ok": bool(_key())}
 
 
+def _cache_path() -> str:
+    analytics = os.environ.get("ANALYTICS_DB", os.path.join(os.path.dirname(__file__), "..", "data", "analytics.db"))
+    return os.environ.get("AI_CACHE_DB", os.path.join(os.path.dirname(os.path.abspath(analytics)), "ai_cache.db"))
+
+
+def _cache_db() -> sqlite3.Connection:
+    path = _cache_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    c = sqlite3.connect(path, timeout=10, isolation_level=None)
+    c.execute("PRAGMA busy_timeout=10000")
+    with _cache_init:
+        c.execute("CREATE TABLE IF NOT EXISTS readings (k TEXT PRIMARY KEY, body TEXT NOT NULL, created INTEGER NOT NULL)")
+    return c
+
+
+def _cache_key(cid: CacheId | None) -> str | None:
+    if cid is None:
+        return None
+    match = re.fullmatch(r"(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2})(?::\d{2})?", cid.birth.strip())
+    tz = cid.tz.strip()
+    lang = cid.lang.strip().lower()
+    ayan = cid.ayanamsa.strip().lower()
+    if not match:
+        return None
+    birth = f"{match.group(1)} {match.group(2)}"
+    if not (-90 <= cid.lat <= 90 and -180 <= cid.lon <= 180):
+        return None
+    if not tz or len(tz) > 64 or lang not in ("en", "te") or not ayan or len(ayan) > 32:
+        return None
+    raw = "|".join([CACHE_VERSION, birth, f"{cid.lat:.4f}", f"{cid.lon:.4f}", tz, lang, ayan])
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def _cache_get(k: str) -> str | None:
+    try:
+        c = _cache_db()
+        row = c.execute("SELECT body, created FROM readings WHERE k = ?", (k,)).fetchone()
+        c.close()
+    except sqlite3.Error:
+        return None
+    if not row or time.time() - row[1] > CACHE_TTL:
+        return None
+    return row[0] or None
+
+
+def _cache_put(k: str, text: str) -> None:
+    if not k or not text or len(text) > 200_000:
+        return
+    now = int(time.time())
+    try:
+        c = _cache_db()
+        # First reading wins until it expires. A later request cannot replace it.
+        c.execute(
+            "INSERT INTO readings (k, body, created) VALUES (?,?,?) "
+            "ON CONFLICT(k) DO UPDATE SET body = excluded.body, created = excluded.created "
+            "WHERE readings.created < ?",
+            (k, text, now, now - CACHE_TTL),
+        )
+        c.close()
+    except sqlite3.Error:
+        return
+
+
+def _cached_sse(text: str):
+    yield _sse_line({"type": "ping"})
+    yield _sse_line({"type": "delta", "text": text})
+    yield _sse_line({"type": "done", "text": text, "stop_reason": "end_turn", "content": [{"type": "text", "text": text}], "tool_uses": [], "cached": True})
+
+
 @router.post("/v1/ai")
 def ai_complete(body: AIReq, request: Request):
+    cache_k = _cache_key(body.cache_id)
+    if cache_k:
+        hit = _cache_get(cache_k)
+        if hit:
+            if body.stream:
+                return StreamingResponse(_cached_sse(hit), media_type="text/event-stream", headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"})
+            return {"text": hit, "stop_reason": "end_turn", "content": [{"type": "text", "text": hit}], "tool_uses": [], "cached": True}
     key = _key()
     if not key:
         raise HTTPException(503, "ANTHROPIC_API_KEY is not configured on the server")
@@ -150,12 +246,15 @@ def ai_complete(body: AIReq, request: Request):
         raise HTTPException(413, "request too large")
     if body.stream:
         return StreamingResponse(
-            _sse(raw, key),
+            _sse(raw, key, cache_k),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"},
         )
     data = _complete(raw, key)
-    return _reply(data)
+    reply = _reply(data)
+    if cache_k and reply["text"] and not reply["tool_uses"]:
+        _cache_put(cache_k, reply["text"])
+    return reply
 
 
 def _request(raw: bytes, key: str) -> urllib.request.Request:
@@ -197,7 +296,7 @@ def _sse_line(obj: dict) -> bytes:
     return ("data: " + json.dumps(obj, ensure_ascii=False) + "\n\n").encode()
 
 
-def _sse(raw: bytes, key: str):
+def _sse(raw: bytes, key: str, cache_k: str | None = None):
     # A first byte goes out before the model starts, so a proxy does not
     # treat the long reading as a dead connection and drop it.
     yield _sse_line({"type": "ping"})
@@ -226,4 +325,7 @@ def _sse(raw: bytes, key: str):
     except Exception:
         yield _sse_line({"type": "error", "detail": "The AI provider is unreachable"})
         return
-    yield _sse_line({"type": "done", **fold.finish()})
+    done = fold.finish()
+    if cache_k and done["text"] and not done["tool_uses"]:
+        _cache_put(cache_k, done["text"])
+    yield _sse_line({"type": "done", **done})

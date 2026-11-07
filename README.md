@@ -5,6 +5,10 @@ cd /Users/vadaliramesh/Projects/jyotish/jyotish-ephe-server
 python3.11 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+mkdir -p ephe
+curl -fsSL -o ephe/sepl_18.se1 https://raw.githubusercontent.com/aloistr/swisseph/master/ephe/sepl_18.se1
+curl -fsSL -o ephe/semo_18.se1 https://raw.githubusercontent.com/aloistr/swisseph/master/ephe/semo_18.se1
+curl -fsSL -o ephe/seas_18.se1 https://raw.githubusercontent.com/aloistr/swisseph/master/ephe/seas_18.se1
 EPHE_PATH=./ephe uvicorn app.main:app --reload --port 8000
 
 
@@ -99,8 +103,18 @@ python tests/smoke_test.py
 ```
 Checks India's 1947 chart (Lagna Vrishabha 7°44′, Moon in Pushya pada 1, Lahiri 23°07.5′), a Hyderabad panchang, KP and true node, batch positions, and error handling.
 
-## Licensing — read before going public
+## Licensing
 
-Swiss Ephemeris (and pyswisseph) is dual-licensed by Astrodienst: **AGPL-3.0** or a paid **Swiss Ephemeris Professional License**. Running it as a public network service under AGPL means you must offer this server's source code to its users. This repo is the whole of that service: charts, panchang, transits, positions, and eclipses. The web app, the AI proxy, and analytics talk to it over HTTP and are separate programs. If you'd rather not publish this repo, buy the professional license from astro.com. I'm not a lawyer, so confirm before launch.
+This server does one thing: compute sidereal positions with Swiss Ephemeris. The routes are `/v1/chart`, `/v1/panchang`, `/v1/transits`, `/v1/positions`, `/v1/eclipses`, and `/v1/ayanamsas`. There is no AI, analytics, accounts, or admin page in this process.
 
-The `.se1` data files come from the official repository (github.com/aloistr/swisseph) under the same terms.
+Swiss Ephemeris and pyswisseph are dual-licensed by Astrodienst: **AGPL-3.0**, or a paid **Swiss Ephemeris Professional License**. Offering those calculations over the network under AGPL means users of this service can get its source. This repository is that source. Publishing it is the AGPL offer for `ephe.vadali.com`.
+
+The Jyotish web app and `jyotish-api` only call this service over HTTP. They do not link Swiss Ephemeris, so they are separate programs and stay private. AGPL here does not pull them in.
+
+To keep this repository private instead, buy the professional license from [astro.com](https://www.astro.com/swisseph/). This is not legal advice; confirm the choice before the public launch.
+
+## Ephemeris files
+
+The `.se1` files are not in this repository. Download the 1800–2400 set into `ephe/` before a local run (commands above), or let the Docker build fetch them. Planets are `sepl_18.se1` (473 KB), the Moon is `semo_18.se1` (1.2 MB), and the main asteroids are `seas_18.se1` (218 KB).
+
+Directory: [github.com/aloistr/swisseph/tree/master/ephe](https://github.com/aloistr/swisseph/tree/master/ephe). Same license as Swiss Ephemeris.

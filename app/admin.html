@@ -56,48 +56,26 @@ async function api(path, body) {
   if (!r.ok) { let detail = 'Request failed (' + r.status + '). Your saved key is still here.'; try { detail = (await r.json()).detail || detail; } catch (err) {} throw new Error(detail); }
   return r.json();
 }
-function fillModelLists() {
-  const presets = window._llmPresets || {};
-  [['basicProv', 'basicList'], ['advProv', 'advList']].forEach(pair => {
-    const names = presets[$(pair[0]).value] || [];
-    $(pair[1]).innerHTML = names.map(n => `<option value="${esc(n)}"></option>`).join('');
-  });
-}
 function renderLlm(s) {
   window._llmPresets = s.presets || {};
-  const keyNote = s.openai_key_saved
-    ? `OpenAI key saved on this server${s.openai_key_hint ? ' (' + esc(s.openai_key_hint) + ')' : ''}. Leave the box blank to keep it.`
-    : (s.openai_key_set
-      ? `Using OPENAI_API_KEY from the server .env${s.openai_key_hint ? ' (' + esc(s.openai_key_hint) + ')' : ''}. Paste a key here to override it.`
-      : 'No OpenAI key yet. Paste one here, or set OPENAI_API_KEY in the server .env.');
+  const names = ((s.presets || {}).anthropic || []).map(n => `<option value="${esc(n)}"></option>`).join('');
   $('llm').innerHTML = `<div class="card"><h2>Models</h2>
-    <div class="note">Basic is used for Ask, the daily horoscope, and the shorter chats. Advanced is used for a full reading and Varshaphal. Type any model id, or pick a suggestion. The next question uses the saved choice.</div>
+    <div class="note">Claude only for now. Basic is Ask, the daily horoscope, and the shorter chats. Advanced is the full reading, Varshaphal, and every divisional chart (D1, D2, D3, D7, D9, D10, D12, D30). Those chart readings stream as they are written. Type a Claude model id, or pick a suggestion. ${s.anthropic_key_set ? 'Anthropic key is set in the server .env.' : 'No Anthropic key in the server .env.'}</div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px"><span style="width:72px">Basic</span>
-      <select id="basicProv"><option value="anthropic">Anthropic</option><option value="openai">OpenAI</option></select>
-      <input id="basicModel" list="basicList" style="width:260px" autocomplete="off"><datalist id="basicList"></datalist></div>
+      <input id="basicModel" list="basicList" style="width:260px" autocomplete="off"><datalist id="basicList">${names}</datalist></div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px"><span style="width:72px">Advanced</span>
-      <select id="advProv"><option value="anthropic">Anthropic</option><option value="openai">OpenAI</option></select>
-      <input id="advModel" list="advList" style="width:260px" autocomplete="off"><datalist id="advList"></datalist></div>
-    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px"><span style="width:72px">OpenAI key</span>
-      <input id="openaiKey" type="password" placeholder="sk-…" style="width:260px" autocomplete="off">
-      ${s.openai_key_saved ? '<button type="button" id="llmClear" style="background:var(--card2);color:var(--txt);border:1px solid var(--line)">Remove saved key</button>' : ''}</div>
-    <div class="note" style="margin-top:6px">${keyNote} ${s.anthropic_key_set ? 'Anthropic key is set in the server .env.' : 'No Anthropic key in the server .env.'}</div>
+      <input id="advModel" list="advList" style="width:260px" autocomplete="off"><datalist id="advList">${names}</datalist></div>
     <div style="margin-top:10px"><button type="button" id="llmSave">Save models</button> <span id="llmMsg" class="note"></span> <span id="llmErr" class="err"></span></div></div>`;
-  $('basicProv').value = s.basic.provider; $('basicModel').value = s.basic.model;
-  $('advProv').value = s.advanced.provider; $('advModel').value = s.advanced.model;
-  fillModelLists();
-  $('basicProv').onchange = fillModelLists; $('advProv').onchange = fillModelLists;
-  $('llmSave').onclick = () => saveLlm(false);
-  if ($('llmClear')) $('llmClear').onclick = () => saveLlm(true);
+  $('basicModel').value = s.basic.model;
+  $('advModel').value = s.advanced.model;
+  $('llmSave').onclick = () => saveLlm();
 }
-async function saveLlm(clear) {
+async function saveLlm() {
   $('llmErr').textContent = ''; $('llmMsg').textContent = '';
-  const body = { basic_provider: $('basicProv').value, basic_model: $('basicModel').value.trim(), advanced_provider: $('advProv').value, advanced_model: $('advModel').value.trim(), clear_openai_key: !!clear };
-  const typed = $('openaiKey').value.trim();
-  if (typed) body.openai_key = typed;
+  const body = { basic_provider: 'anthropic', basic_model: $('basicModel').value.trim(), advanced_provider: 'anthropic', advanced_model: $('advModel').value.trim() };
   try {
     renderLlm(await api('/admin/llm', body));
-    $('llmMsg').textContent = clear ? 'Saved OpenAI key removed.' : 'Saved. The next question uses these models.';
+    $('llmMsg').textContent = 'Saved. The next question uses these Claude models.';
   } catch (e) { if (e.needKey) askKey(e.message); else $('llmErr').textContent = e.message; }
 }
 const table = (rows, cols, maxCol) => { if (!rows.length) return '<div class="note">No data yet.</div>'; const mx = maxCol ? Math.max(...rows.map(r => +r[maxCol] || 0), 1) : 0;

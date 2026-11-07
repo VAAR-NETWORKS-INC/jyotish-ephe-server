@@ -70,11 +70,13 @@ def _slot(tier: str, saved: dict | None = None) -> dict:
     base = _default_slot(tier)
     if not isinstance(raw, dict):
         return base
-    provider = raw.get("provider") if raw.get("provider") in ("anthropic", "openai") else base["provider"]
+    # OpenAI is off for now. A saved OpenAI choice falls back to Claude.
+    if raw.get("provider") not in (None, "anthropic"):
+        return base
     model = str(raw.get("model") or "").strip()
     if not _MODEL_RE.fullmatch(model):
         model = base["model"]
-    return {"provider": provider, "model": model}
+    return {"provider": "anthropic", "model": model}
 
 
 def _openai_key(saved: dict | None = None) -> str:
@@ -376,7 +378,7 @@ def ai_complete(body: AIReq, request: Request):
 def _anthropic_payload(model: str, body: AIReq) -> dict:
     payload: dict = {
         "model": model,
-        "max_tokens": 4000 if body.tier == "quick" else 8000,
+        "max_tokens": 4000 if body.tier == "quick" else 12000,
         "messages": [m.model_dump() for m in body.messages],
     }
     if body.tools:

@@ -1,6 +1,7 @@
 __pycache__
 *.pyc
 .env
+.venv/
 tests/__pycache__
 data
 ephe/*.se1

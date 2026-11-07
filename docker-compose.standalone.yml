@@ -11,10 +11,6 @@ services:
     environment:
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-*}
       API_KEY: ${API_KEY:-}
-      ADMIN_KEY: ${ADMIN_KEY:?set ADMIN_KEY in .env}
-      ANALYTICS_DB: /data/analytics.db
-    volumes:
-      - ./data:/data
     expose:
       - "8000"
 

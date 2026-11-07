@@ -1,11 +1,15 @@
 """
 Jyotish Ephemeris API — Swiss Ephemeris (native) behind FastAPI.
 
+Astronomy only. AI, analytics, and future accounts live in jyotish-api so this
+service can be published on its own under the Swiss Ephemeris license.
+
 Endpoints (all angles in degrees, all instants in UTC ISO-8601):
   GET  /health
   GET  /v1/ayanamsas
   GET  /v1/chart      ?datetime=1990-01-15T01:00:00Z&lat=17.385&lon=78.4867[&ayanamsa=lahiri&node=mean&houses=W]
   GET  /v1/panchang   ?date=2026-11-06&lat=..&lon=..&tz=Asia/Kolkata[&ayanamsa=lahiri&sunrise=standard]
+  GET  /v1/eclipses   ?lat=..&lon=..&tz=America/Los_Angeles[&from=YYYY-MM-DD&count=6&ayanamsa=lahiri&visible_only=false]
   GET  /v1/transits   ?datetime=...[&ayanamsa=lahiri&node=mean]           (geocentric, no location needed)
   POST /v1/positions  {"datetimes": [...], "bodies": ["Sun","Moon"], "ayanamsa": "lahiri"}   (batch, <= 2000)
 """
@@ -31,17 +35,15 @@ EPHE_PATH = os.environ.get("EPHE_PATH", os.path.join(os.path.dirname(__file__), 
 swe.set_ephe_path(EPHE_PATH)
 ALLOWED_ORIGINS = [o.strip() for o in os.environ.get("ALLOWED_ORIGINS", "*").split(",")]
 
-app = FastAPI(title="Jyotish Ephemeris API", version="1.1.0", redirect_slashes=False)
-from .analytics import router as analytics_router  # noqa: E402
-from .ai import router as ai_router  # noqa: E402
-app.include_router(analytics_router)
-app.include_router(ai_router)
+app = FastAPI(title="Jyotish Ephemeris API", version="1.2.0", redirect_slashes=False)
+from .eclipses import router as eclipses_router  # noqa: E402
+app.include_router(eclipses_router)
 API_KEY = os.environ.get("API_KEY", "")   # optional: require header x-api-key
 
 
 @app.middleware("http")
 async def guard_and_cache(request, call_next):
-    if API_KEY and request.url.path.startswith("/v1/") and request.url.path != "/v1/events" and request.headers.get("x-api-key") != API_KEY:
+    if API_KEY and request.url.path.startswith("/v1/") and request.headers.get("x-api-key") != API_KEY:
         from fastapi.responses import JSONResponse
         return JSONResponse({"detail": "missing or bad x-api-key"}, status_code=401)
     resp = await call_next(request)
@@ -49,7 +51,7 @@ async def guard_and_cache(request, call_next):
         path = request.url.path
         if path == "/v1/chart" or (path == "/v1/transits" and "datetime" in request.query_params):
             resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"   # a past instant never changes
-        elif path == "/v1/panchang":
+        elif path in ("/v1/panchang", "/v1/eclipses"):
             resp.headers["Cache-Control"] = "public, max-age=86400"
     return resp
 

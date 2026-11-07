@@ -11,6 +11,8 @@ EPHE_PATH=./ephe uvicorn app.main:app --reload --port 8000
 
 High-precision Vedic astronomy service for the Jyotish AI app: **native Swiss Ephemeris** (pyswisseph 2.10, official `.se1` files, 1800–2400 AD) behind a small FastAPI app, served over HTTPS by Caddy. Built to run on a Hetzner box with Docker.
 
+This repository is astronomy only: charts, transits, panchang, eclipse lists, and batch positions. The AI proxy, anonymous analytics, admin dashboard, and any future accounts live in `jyotish-api`, which stays private. That split is what lets this service be published on its own.
+
 What it gives you over the app's built-in formulas:
 
 | | Built-in JS engine | This server |
@@ -32,7 +34,7 @@ cd /path/to/ualbums-server-infra
 curl https://ephe.vadali.com/health
 ```
 
-The script clones [jyotish-ephe-server](https://github.com/VAAR-NETWORKS-INC/jyotish-ephe-server) next to `ualbums-server-infra`, creates `.env` with `ADMIN_KEY` on first run, builds `jyotish-ephe`, and reloads Caddy. The dashboard is `https://ephe.vadali.com/admin`.
+The script clones [jyotish-ephe-server](https://github.com/VAAR-NETWORKS-INC/jyotish-ephe-server) next to `ualbums-server-infra`, builds `jyotish-ephe`, and reloads Caddy. AI and the admin dashboard are a separate service (`jyotish-api`); they are not on this host.
 
 A dedicated machine that is not already serving 80/443 can still use `docker compose -f docker-compose.standalone.yml up -d --build` with `DOMAIN` set in `.env`.
 
@@ -73,21 +75,6 @@ Batch longitudes for scanning (festival / muhurtham search), up to 2,000 instant
 
 ### `GET /health`, `GET /v1/ayanamsas`
 
-## Usage analytics (anonymous)
-
-The same server collects anonymous product analytics in SQLite (`./data/analytics.db`, mounted as a volume, so it survives rebuilds).
-
-- **What the app sends:** a random install ID (created on the device; no login), a session ID, app version, platform (web, pwa, ios or android), language, time zone, and events such as `app_open`, `tab_view`, `city_set` (city, state, country), `kundli_generated` (engine and ayanamsa only), `muhurtham_search`, `match_check` (score only), `names_search`, `prashna_cast`, `ai_question` (which engine tools were used, response time, success; **not** the question text), `ai_reading`, `anniversary_added`, `settings_saved`, `install_prompt`, `app_installed` and `js_error`.
-- **Never sent:** birth date, time or place, names, exact coordinates, chat text.
-- Events are queued on the device (they survive going offline) and sent in batches, plus once when the app goes to the background. Users can switch it off in ⚙ Settings.
-- `POST /v1/events` is exempt from `API_KEY` and is rate-limited per ID.
-
-**Dashboard:** open `https://ephe.yourdomain.com/admin` and enter `ADMIN_KEY` from `.env`. It shows daily, weekly and monthly active users, new users, D1/D7 retention, screens used, top actions, cities, AI usage and engine tools called, Muhurtham searches, platforms, and recent users with a click-through event trail.
-JSON is available at `GET /admin/stats?days=30` (header `x-admin-key`), and one user's trail at `GET /admin/user/<id-prefix>`.
-
-**Backups:** `sqlite3 data/analytics.db ".backup data/backup-$(date +%F).db"` (e.g. nightly via cron).
-**Privacy:** add a short privacy notice to your site saying what's collected (above). Under CCPA/GDPR the in-app opt-out helps, but get it reviewed.
-
 ## Using it from the app
 
 ```js
@@ -114,6 +101,6 @@ Checks India's 1947 chart (Lagna Vrishabha 7°44′, Moon in Pushya pada 1, Lahi
 
 ## Licensing — read before going public
 
-Swiss Ephemeris (and pyswisseph) is dual-licensed by Astrodienst: **AGPL-3.0** or a paid **Swiss Ephemeris Professional License**. Running it as a public network service under AGPL means you must offer this server's source code to its users. This repo is small and self-contained, so publishing it is easy. Your app talks to it over HTTP. If you'd rather not publish it, buy the professional license from astro.com. I'm not a lawyer, so confirm before launch.
+Swiss Ephemeris (and pyswisseph) is dual-licensed by Astrodienst: **AGPL-3.0** or a paid **Swiss Ephemeris Professional License**. Running it as a public network service under AGPL means you must offer this server's source code to its users. This repo is the whole of that service: charts, panchang, transits, positions, and eclipses. The web app, the AI proxy, and analytics talk to it over HTTP and are separate programs. If you'd rather not publish this repo, buy the professional license from astro.com. I'm not a lawyer, so confirm before launch.
 
 The `.se1` data files come from the official repository (github.com/aloistr/swisseph) under the same terms.

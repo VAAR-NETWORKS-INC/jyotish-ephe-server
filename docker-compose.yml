@@ -11,12 +11,6 @@ services:
     environment:
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-*}
       API_KEY: ${API_KEY:-}
-      ADMIN_KEY: ${ADMIN_KEY:?set ADMIN_KEY in jyotish-ephe-server/.env}
-      ANALYTICS_DB: /data/analytics.db
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-    volumes:
-      - ./data:/data
     expose:
       - "8000"
     networks:
